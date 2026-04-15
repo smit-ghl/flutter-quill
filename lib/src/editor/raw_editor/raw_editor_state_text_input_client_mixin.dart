@@ -231,7 +231,14 @@ mixin RawEditorStateTextInputClientMixin on EditorState
     final oldText = effectiveLastKnownValue.text;
     final text = value.text;
     final cursorPosition = value.selection.extentOffset;
-    final diff = getDiff(oldText, text, cursorPosition);
+    final diff = computeTextReplacementDiff(
+          oldText: oldText,
+          oldComposing: effectiveLastKnownValue.composing,
+          newText: text,
+          newComposing: value.composing,
+          newSelection: value.selection,
+        ) ??
+        getDiff(oldText, text, cursorPosition);
     if (diff.deleted.isEmpty && diff.inserted.isEmpty) {
       widget.controller.updateSelection(value.selection, ChangeSource.local);
     } else {

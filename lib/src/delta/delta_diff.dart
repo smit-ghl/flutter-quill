@@ -1,7 +1,8 @@
 import 'dart:math' as math;
-import 'dart:ui' show TextDirection;
+import 'dart:ui' show TextDirection, TextRange;
 
 import 'package:flutter/foundation.dart' show immutable;
+import 'package:flutter/services.dart' show TextSelection;
 
 import '../../quill_delta.dart';
 import '../document/attribute.dart';
@@ -54,6 +55,78 @@ Diff getDiff(String oldText, String newText, int cursorPosition) {
     start: start,
     deleted: deleted,
     inserted: inserted,
+  );
+}
+
+/// Detects an iOS system text-replacement commit (Settings → General →
+/// Keyboard → Text Replacement) and derives the [Diff] directly from the
+/// composing range instead of the heuristic [getDiff] scan.
+///
+/// iOS commits a text replacement in a single `updateEditingValue` where the
+/// previous state's composing range marks the shortcut being replaced and the
+/// new state's composing is cleared. When the shortcut shares a substring
+/// with the expansion (e.g. shortcut `prog` expanding to a URL containing
+/// `programa`), [getDiff]'s forward/backward character scan can misalign
+/// start/end pointers and produce a malformed op that leaves the shortcut in
+/// the document and drops a prefix of the expansion.
+///
+/// Returns `null` when the change does not match the text-replacement commit
+/// signature so callers fall back to the original [getDiff] path.
+Diff? computeTextReplacementDiff({
+  required String oldText,
+  required TextRange oldComposing,
+  required String newText,
+  required TextRange newComposing,
+  required TextSelection newSelection,
+}) {
+  // Only act when the previous state had an active composing range and the
+  // new state has cleared it — that is the signature of a commit.
+  if (!oldComposing.isValid || oldComposing.isCollapsed) {
+    return null;
+  }
+  if (newComposing.isValid && !newComposing.isCollapsed) {
+    return null;
+  }
+
+  // Selection must be collapsed (caret, not a highlighted range) after a
+  // replacement commit.
+  if (!newSelection.isValid || !newSelection.isCollapsed) {
+    return null;
+  }
+
+  final cursor = newSelection.extentOffset;
+  final start = oldComposing.start;
+  final deletedLength = oldComposing.end - oldComposing.start;
+  final insertedLength = cursor - start;
+
+  // Bounds checks — bail to the fallback if anything looks off.
+  if (start < 0 ||
+      deletedLength <= 0 ||
+      insertedLength < 0 ||
+      start + deletedLength > oldText.length ||
+      start + insertedLength > newText.length) {
+    return null;
+  }
+
+  // Confirm the surrounding context matches: everything before the composing
+  // start and everything after the composing end in the old text must be
+  // preserved verbatim in the new text.
+  final oldTailStart = start + deletedLength;
+  final newTailStart = start + insertedLength;
+  if (oldText.length - oldTailStart != newText.length - newTailStart) {
+    return null;
+  }
+  if (oldText.substring(0, start) != newText.substring(0, start)) {
+    return null;
+  }
+  if (oldText.substring(oldTailStart) != newText.substring(newTailStart)) {
+    return null;
+  }
+
+  return Diff(
+    start: start,
+    deleted: oldText.substring(start, oldTailStart),
+    inserted: newText.substring(start, newTailStart),
   );
 }
 
