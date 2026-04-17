@@ -3,6 +3,102 @@ import 'package:flutter_quill/src/delta/delta_diff.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
+  // ---------------------------------------------------------------------------
+  // getDiff — prefix/suffix-based algorithm
+  // ---------------------------------------------------------------------------
+  group('getDiff', () {
+    test(
+        'produces correct diff when shortcut shares a substring with expansion'
+        ' (iOS text replacement — no composing range)', () {
+      // The critical regression case: shortcut `prog` expands to a URL that
+      // contains `programa`. The old cursor-anchored heuristic collided on the
+      // shared `prog` prefix and produced a malformed op. The prefix+suffix
+      // algorithm finds the minimal edit without cursor position help.
+      const oldText = 'prog';
+      const newText = 'https://example.com/programa-schedule-a-call';
+
+      final diff = getDiff(oldText, newText, newText.length);
+
+      expect(diff.start, 0);
+      expect(diff.deleted, 'prog');
+      expect(diff.inserted, newText);
+    });
+
+    test('correct diff when shortcut replacement is in the middle of text', () {
+      // "Hello " is the common prefix; " have a nice day" is the common
+      // suffix — the algorithm correctly isolates only "prog" as deleted.
+      const oldText = 'Hello prog have a nice day';
+      const newText =
+          'Hello https://example.com/programa-schedule-a-call have a nice day';
+
+      final cursorPosition =
+          'Hello https://example.com/programa-schedule-a-call'.length;
+      final diff = getDiff(oldText, newText, cursorPosition);
+
+      expect(diff.start, 6); // after 'Hello '
+      expect(diff.deleted, 'prog');
+      expect(diff.inserted, 'https://example.com/programa-schedule-a-call');
+    });
+
+    test('appends a character (normal typing)', () {
+      final diff = getDiff('abc', 'abcd', 4);
+
+      expect(diff.start, 3);
+      expect(diff.deleted, '');
+      expect(diff.inserted, 'd');
+    });
+
+    test('deletes a character (backspace)', () {
+      final diff = getDiff('abcd', 'abc', 3);
+
+      expect(diff.start, 3);
+      expect(diff.deleted, 'd');
+      expect(diff.inserted, '');
+    });
+
+    test('replaces a character in the middle', () {
+      final diff = getDiff('axc', 'abc', 2);
+
+      expect(diff.start, 1);
+      expect(diff.deleted, 'x');
+      expect(diff.inserted, 'b');
+    });
+
+    test('handles completely different strings', () {
+      final diff = getDiff('old', 'new', 3);
+
+      expect(diff.start, 0);
+      expect(diff.deleted, 'old');
+      expect(diff.inserted, 'new');
+    });
+
+    test('handles empty old text (first keystroke)', () {
+      final diff = getDiff('', 'a', 1);
+
+      expect(diff.start, 0);
+      expect(diff.deleted, '');
+      expect(diff.inserted, 'a');
+    });
+
+    test('handles empty new text (select-all delete)', () {
+      final diff = getDiff('abc', '', 0);
+
+      expect(diff.start, 0);
+      expect(diff.deleted, 'abc');
+      expect(diff.inserted, '');
+    });
+
+    test('returns empty diff for identical strings', () {
+      final diff = getDiff('same', 'same', 4);
+
+      expect(diff.deleted, '');
+      expect(diff.inserted, '');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // computeTextReplacementDiff — composing-range fast path (IME / marked text)
+  // ---------------------------------------------------------------------------
   group('computeTextReplacementDiff', () {
     test(
         'recovers exact diff when iOS expands shortcut that shares a substring'

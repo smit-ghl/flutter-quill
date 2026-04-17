@@ -32,29 +32,40 @@ class Diff {
   }
 }
 
-/* Get diff operation between old text and new text */
+/// Get diff operation between old text and new text.
+///
+/// Uses a longest-common-prefix + longest-common-suffix scan to find the
+/// minimal edit region. This correctly handles cases where the deleted text
+/// shares a substring with the inserted text — for example, an iOS system
+/// text-replacement shortcut (e.g. `prog`) whose shortcut word appears inside
+/// the expansion (e.g. a URL containing `programa`). The previous
+/// cursor-position-anchored heuristic misaligned the start/end pointers in
+/// such cases, producing a malformed Delta op.
+///
+/// [cursorPosition] is kept in the signature for API compatibility but is no
+/// longer used in the computation.
 Diff getDiff(String oldText, String newText, int cursorPosition) {
-  var end = oldText.length;
-  final delta = newText.length - end;
-  for (final limit = math.max(0, cursorPosition - delta);
-      end > limit && oldText[end - 1] == newText[end + delta - 1];
-      end--) {}
+  // Find the length of the longest common prefix.
+  final maxPrefix = math.min(oldText.length, newText.length);
   var start = 0;
-  //TODO: we need to improve this part because this loop has a lot of unsafe index operations
-  for (final startLimit = cursorPosition - math.max(0, delta);
-      start < startLimit &&
-          (start > oldText.length - 1 ? '' : oldText[start]) ==
-              (start > newText.length - 1 ? '' : newText[start]);
-      start++) {}
-  final deleted = (start >= end) ? '' : oldText.substring(start, end);
-  // we need to make the check if the start is major than the end because if we directly get the
-  // new inserted text without checking first, this will always throw an error since this is an unsafe op
-  final inserted =
-      (start >= end + delta) ? '' : newText.substring(start, end + delta);
+  while (start < maxPrefix && oldText[start] == newText[start]) {
+    start++;
+  }
+
+  // Find the length of the longest common suffix, not overlapping the prefix.
+  var oldEnd = oldText.length;
+  var newEnd = newText.length;
+  while (oldEnd > start &&
+      newEnd > start &&
+      oldText[oldEnd - 1] == newText[newEnd - 1]) {
+    oldEnd--;
+    newEnd--;
+  }
+
   return Diff(
     start: start,
-    deleted: deleted,
-    inserted: inserted,
+    deleted: oldText.substring(start, oldEnd),
+    inserted: newText.substring(start, newEnd),
   );
 }
 
