@@ -743,6 +743,47 @@ void main() {
       controller.dispose();
     });
 
+    // ---- toggledStyle inline-style mirror ------------------------------------
+
+    testWidgets(
+        'iOS text replacement with pending bold toggledStyle '
+        'applies bold attribute to inserted text',
+        (tester) async {
+      const url = 'https://example.com/programa-schedule-a-call';
+      // Controller starts with the shortcut 'prog'.
+      final controller = _ctrl('prog');
+
+      await tester.pumpWidget(_buildApp(controller));
+      await tester.quillGiveFocus(find.byType(QuillEditor));
+
+      // Simulate the user having toggled bold before the replacement arrives.
+      // In the real UI this happens when the user taps the Bold toolbar button
+      // while the caret is inside the shortcut word.
+      controller.toggledStyle = Style.attr({
+        Attribute.bold.key: Attribute.bold,
+      });
+
+      // iOS commits the text replacement.
+      await tester.quillUpdateEditingValueWithSelection(
+        find.byType(QuillEditor),
+        '$url\n',
+        TextSelection.collapsed(offset: url.length),
+      );
+
+      // The URL text must be present in the document.
+      expect(controller.document.toPlainText(), '$url\n');
+
+      // Every character of the inserted URL should carry the bold attribute.
+      final style = controller.document.collectStyle(0, url.length);
+      expect(
+        style.containsKey(Attribute.bold.key),
+        isTrue,
+        reason: 'Bold toggledStyle must be mirrored onto the inserted URL',
+      );
+
+      controller.dispose();
+    });
+
     // ---- Composing-range-only change -------------------------------------
 
     testWidgets('composing-range-only change does not modify document',
