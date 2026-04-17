@@ -246,37 +246,49 @@ mixin RawEditorStateTextInputClientMixin on EditorState
 
     if (diff.deleted.isEmpty && diff.inserted.isEmpty) {
       widget.controller.updateSelection(value.selection, ChangeSource.local);
-    } else {
-      // Build a precise delta and compose it directly instead of routing
-      // through document.replace (which applies heuristic insert rules that
-      // can place the inserted text before or after the deleted region,
-      // causing subsequent deletes to hit the wrong characters).
+    } else if (diff.deleted.isEmpty || diff.inserted.isEmpty) {
+      // Pure insert or pure delete: route through replaceText normally.
       //
-      // The platform-supplied diff is authoritative: delete `deleted.length`
-      // chars starting at `start`, then insert `inserted` at the same
-      // position. This order is unambiguous regardless of content.
+      // These cases do NOT have the heuristic-collision problem:
+      //   • Pure insert: no delete follows, so the insert position is irrelevant.
+      //   • Pure delete: no insert rules are applied at all.
+      //
+      // Keeping this path preserves the benefits of insert rules, in particular
+      // PreserveInlineStylesRule (typing inside bold/italic inherits the style)
+      // and AutoFormatLinksRule (URLs are auto-linked as you type).
+      widget.controller.replaceText(
+        diff.start,
+        diff.deleted.length,
+        diff.inserted,
+        value.selection,
+      );
+    } else {
+      // True replacement (both delete and insert non-empty): bypass heuristic
+      // insert rules. Rules can insert the new text before OR after the
+      // deleted region — the subsequent delete(index, len) then hits the
+      // wrong characters (e.g. the front of the newly inserted URL instead
+      // of the shortcut text). Build a precise delete-then-insert delta at
+      // a fixed offset; the order is unambiguous regardless of content.
       final replaceDelta = Delta();
       if (diff.start > 0) replaceDelta.retain(diff.start);
-      if (diff.deleted.isNotEmpty) replaceDelta.delete(diff.deleted.length);
-      if (diff.inserted.isNotEmpty) replaceDelta.insert(diff.inserted);
+      replaceDelta.delete(diff.deleted.length);
+      replaceDelta.insert(diff.inserted);
       widget.controller.document.compose(replaceDelta, ChangeSource.local);
 
       // Mirror replaceText's toggledStyle handling: apply any pending inline
       // formatting to the newly inserted text, then let updateSelection clear
       // the toggled state as it normally does.
-      if (diff.inserted.isNotEmpty) {
-        final inlineStyle = Style.attr(
-          Map<String, Attribute>.fromEntries(
-            widget.controller.toggledStyle.attributes.entries
-                .where((a) => a.value.scope != AttributeScope.block),
-          ),
-        );
-        if (inlineStyle.isNotEmpty) {
-          final styleDelta = Delta()
-            ..retain(diff.start)
-            ..retain(diff.inserted.length, inlineStyle.toJson());
-          widget.controller.document.compose(styleDelta, ChangeSource.local);
-        }
+      final inlineStyle = Style.attr(
+        Map<String, Attribute>.fromEntries(
+          widget.controller.toggledStyle.attributes.entries
+              .where((a) => a.value.scope != AttributeScope.block),
+        ),
+      );
+      if (inlineStyle.isNotEmpty) {
+        final styleDelta = Delta()
+          ..retain(diff.start)
+          ..retain(diff.inserted.length, inlineStyle.toJson());
+        widget.controller.document.compose(styleDelta, ChangeSource.local);
       }
 
       widget.controller.updateSelection(value.selection, ChangeSource.local);
