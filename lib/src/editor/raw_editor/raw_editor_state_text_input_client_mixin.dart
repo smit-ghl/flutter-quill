@@ -7,9 +7,12 @@ import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:meta/meta.dart';
 
+import '../../../quill_delta.dart';
 import '../../common/extensions/view_id_ext.dart';
 import '../../delta/delta_diff.dart';
+import '../../document/attribute.dart';
 import '../../document/document.dart';
+import '../../document/style.dart';
 import '../editor.dart';
 import 'raw_editor.dart';
 
@@ -231,6 +234,7 @@ mixin RawEditorStateTextInputClientMixin on EditorState
     final oldText = effectiveLastKnownValue.text;
     final text = value.text;
     final cursorPosition = value.selection.extentOffset;
+
     final diff = computeTextReplacementDiff(
           oldText: oldText,
           oldComposing: effectiveLastKnownValue.composing,
@@ -239,15 +243,43 @@ mixin RawEditorStateTextInputClientMixin on EditorState
           newSelection: value.selection,
         ) ??
         getDiff(oldText, text, cursorPosition);
+
     if (diff.deleted.isEmpty && diff.inserted.isEmpty) {
       widget.controller.updateSelection(value.selection, ChangeSource.local);
     } else {
-      widget.controller.replaceText(
-        diff.start,
-        diff.deleted.length,
-        diff.inserted,
-        value.selection,
-      );
+      // Build a precise delta and compose it directly instead of routing
+      // through document.replace (which applies heuristic insert rules that
+      // can place the inserted text before or after the deleted region,
+      // causing subsequent deletes to hit the wrong characters).
+      //
+      // The platform-supplied diff is authoritative: delete `deleted.length`
+      // chars starting at `start`, then insert `inserted` at the same
+      // position. This order is unambiguous regardless of content.
+      final replaceDelta = Delta();
+      if (diff.start > 0) replaceDelta.retain(diff.start);
+      if (diff.deleted.isNotEmpty) replaceDelta.delete(diff.deleted.length);
+      if (diff.inserted.isNotEmpty) replaceDelta.insert(diff.inserted);
+      widget.controller.document.compose(replaceDelta, ChangeSource.local);
+
+      // Mirror replaceText's toggledStyle handling: apply any pending inline
+      // formatting to the newly inserted text, then let updateSelection clear
+      // the toggled state as it normally does.
+      if (diff.inserted.isNotEmpty) {
+        final inlineStyle = Style.attr(
+          Map<String, Attribute>.fromEntries(
+            widget.controller.toggledStyle.attributes.entries
+                .where((a) => a.value.scope != AttributeScope.block),
+          ),
+        );
+        if (inlineStyle.isNotEmpty) {
+          final styleDelta = Delta()
+            ..retain(diff.start)
+            ..retain(diff.inserted.length, inlineStyle.toJson());
+          widget.controller.document.compose(styleDelta, ChangeSource.local);
+        }
+      }
+
+      widget.controller.updateSelection(value.selection, ChangeSource.local);
     }
   }
 
