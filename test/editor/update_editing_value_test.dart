@@ -669,6 +669,80 @@ void main() {
       controller.dispose();
     });
 
+    // ---- Enter key after iOS text replacement --------------------------------
+    //
+    // Regression for: after text replacement the document's mandatory trailing
+    // '\n' was included in the diff's deleted segment (crashing compose) or
+    // updateRemoteValueIfNeeded sent the sentinel back to iOS, causing a
+    // subsequent Enter to produce an insert at index == document.length.
+
+    testWidgets(
+        'Enter after iOS text replacement does not throw '
+        '(sentinel \\n not deleted, index within bounds)',
+        (tester) async {
+      const prefix = 'Hello ';
+      const url = 'https://realtorenespanol.com/programa-su-llamada';
+      // Start with the shortcut text
+      final controller = _ctrl('${prefix}prog');
+      await tester.pumpWidget(_buildApp(controller));
+      await tester.quillGiveFocus(find.byType(QuillEditor));
+
+      // Step 1: iOS text replacement — payload has NO trailing \n
+      await tester.quillUpdateEditingValueWithSelection(
+        find.byType(QuillEditor),
+        '$prefix$url',
+        TextSelection.collapsed(offset: (prefix + url).length),
+      );
+      expect(controller.document.toPlainText(), '$prefix$url\n');
+
+      // Step 2: iOS Enter — sends text with user's \n + Quill's sentinel \n
+      final afterReplace = tester.testTextInput.editingState;
+      final afterReplaceText = (afterReplace?['text'] as String?) ?? '';
+      final cursorPos = (prefix + url).length;
+      final enterText =
+          afterReplaceText.substring(0, cursorPos) + '\n' + afterReplaceText.substring(cursorPos);
+      await tester.quillUpdateEditingValueWithSelection(
+        find.byType(QuillEditor),
+        enterText,
+        TextSelection.collapsed(offset: cursorPos + 1),
+      );
+
+      expect(
+        controller.document.toPlainText(),
+        '$prefix$url\n\n',
+        reason: 'Enter should insert a newline after the URL',
+      );
+      controller.dispose();
+    });
+
+    testWidgets(
+        'Enter after normal typing does not throw '
+        '(sentinel \\n handled correctly in every keystroke)',
+        (tester) async {
+      final controller = _ctrl('hello');
+      await tester.pumpWidget(_buildApp(controller));
+      await tester.quillGiveFocus(find.byType(QuillEditor));
+
+      // iOS always sends text WITH the Quill sentinel \n. Type 'a' at position
+      // 5 (before sentinel): "hello\n" → "helloa\n".
+      await tester.quillUpdateEditingValueWithSelection(
+        find.byType(QuillEditor),
+        'helloa\n',
+        TextSelection.collapsed(offset: 6),
+      );
+      expect(controller.document.toPlainText(), 'helloa\n');
+
+      // Enter at position 6 (after 'a', before sentinel): iOS appends \n
+      // before the sentinel — "helloa\n\n".
+      await tester.quillUpdateEditingValueWithSelection(
+        find.byType(QuillEditor),
+        'helloa\n\n',
+        TextSelection.collapsed(offset: 7),
+      );
+      expect(controller.document.toPlainText(), 'helloa\n\n');
+      controller.dispose();
+    });
+
     // ---- Composing-range-only change -------------------------------------
 
     testWidgets('composing-range-only change does not modify document',

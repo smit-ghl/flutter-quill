@@ -231,16 +231,36 @@ mixin RawEditorStateTextInputClientMixin on EditorState
 
     final effectiveLastKnownValue = _lastKnownRemoteTextEditingValue!;
     _lastKnownRemoteTextEditingValue = value;
-    final oldText = effectiveLastKnownValue.text;
-    final text = value.text;
-    final cursorPosition = value.selection.extentOffset;
+
+    // Quill's document always ends with a mandatory '\n' sentinel that is never
+    // user-editable. iOS may or may not include it in updateEditingValue
+    // payloads (it depends on whether setEditingState was called with it
+    // previously). Strip exactly one trailing '\n' from both sides before
+    // computing the diff so that:
+    //   • diff positions never reference the sentinel, preventing an
+    //     index >= document.length assertion when Enter is pressed.
+    //   • A text-replacement payload that omits the trailing '\n' doesn't
+    //     accidentally include it in the `deleted` segment, which would
+    //     compose a delta that removes the mandatory terminator.
+    String _stripSentinel(String s) =>
+        s.endsWith('\n') ? s.substring(0, s.length - 1) : s;
+
+    final oldText = _stripSentinel(effectiveLastKnownValue.text);
+    final text = _stripSentinel(value.text);
+    // Clamp cursor to the stripped text length — iOS may report the cursor
+    // at the position of the stripped sentinel (text.length + 1).
+    final cursorPosition = value.selection.extentOffset.clamp(0, text.length);
+    final clampedSelection = value.selection.copyWith(
+      baseOffset: value.selection.baseOffset.clamp(0, text.length),
+      extentOffset: cursorPosition,
+    );
 
     final diff = computeTextReplacementDiff(
           oldText: oldText,
           oldComposing: effectiveLastKnownValue.composing,
           newText: text,
           newComposing: value.composing,
-          newSelection: value.selection,
+          newSelection: clampedSelection,
         ) ??
         getDiff(oldText, text, cursorPosition);
 
