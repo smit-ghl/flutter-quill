@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
-import 'package:meta/meta.dart';
 
 import '../../../quill_delta.dart';
 import '../../common/extensions/view_id_ext.dart';
@@ -305,8 +304,9 @@ mixin RawEditorStateTextInputClientMixin on EditorState
 
       final replaceDelta = Delta();
       if (diff.start > 0) replaceDelta.retain(diff.start);
-      replaceDelta.delete(diff.deleted.length);
-      replaceDelta.insert(diff.inserted);
+      replaceDelta
+        ..delete(diff.deleted.length)
+        ..insert(diff.inserted);
 
       // document.compose does NOT call notifyListeners on its own — that
       // notification is deferred to the updateSelection call below.  This is

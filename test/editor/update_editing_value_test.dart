@@ -20,7 +20,6 @@
 // 3. Widget tests                  – simulate real platform updateEditingValue
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_quill/flutter_quill.dart';
 import 'package:flutter_quill/quill_delta.dart';
 import 'package:flutter_quill/src/delta/delta_diff.dart';
@@ -54,7 +53,7 @@ Delta _buildReplaceDelta({
 }
 
 /// Applies [getDiff] to compute the diff between [oldText] and [newText],
-/// then builds and returns the replacement delta (same logic as the mixin).
+/// then builds the replacement delta (same logic as the mixin).
 Delta _diffDelta(String oldText, String newText, int cursor) {
   final diff = getDiff(oldText, newText, cursor);
   return _buildReplaceDelta(
@@ -288,7 +287,7 @@ void main() {
   // ---------------------------------------------------------------------------
 
   group('getDiff + Document.compose integration (CU-86d2ne59y)', () {
-    void _apply(Document doc, String oldText, String newText, int cursor) {
+    void apply(Document doc, String oldText, String newText, int cursor) {
       final delta = _diffDelta(oldText, newText, cursor);
       final diff = getDiff(oldText, newText, cursor);
       if (diff.deleted.isEmpty && diff.inserted.isEmpty) return;
@@ -300,7 +299,7 @@ void main() {
       final doc = _doc('prog');
 
       // Old text the mixin sees: "prog\n"; new text iOS sends: "url\n"
-      _apply(doc, 'prog\n', '$url\n', url.length);
+      apply(doc, 'prog\n', '$url\n', url.length);
 
       expect(doc.toPlainText(), '$url\n');
     });
@@ -309,7 +308,7 @@ void main() {
       const url = 'https://example.com/programa-schedule-a-call';
       final doc = _doc('Hello prog end');
 
-      _apply(
+      apply(
           doc, 'Hello prog end\n', 'Hello $url end\n', 'Hello $url'.length);
 
       expect(doc.toPlainText(), 'Hello $url end\n');
@@ -318,7 +317,7 @@ void main() {
     test('omw shortcut: omw → on my way', () {
       final doc = _doc('omw');
 
-      _apply(doc, 'omw\n', 'on my way\n', 9);
+      apply(doc, 'omw\n', 'on my way\n', 9);
 
       expect(doc.toPlainText(), 'on my way\n');
     });
@@ -326,7 +325,7 @@ void main() {
     test('normal typing: character appended', () {
       final doc = _doc('hello');
 
-      _apply(doc, 'hello\n', 'hello!\n', 6);
+      apply(doc, 'hello\n', 'hello!\n', 6);
 
       expect(doc.toPlainText(), 'hello!\n');
     });
@@ -334,7 +333,7 @@ void main() {
     test('backspace: last character removed', () {
       final doc = _doc('hello!');
 
-      _apply(doc, 'hello!\n', 'hello\n', 5);
+      apply(doc, 'hello!\n', 'hello\n', 5);
 
       expect(doc.toPlainText(), 'hello\n');
     });
@@ -342,7 +341,7 @@ void main() {
     test('autocorrect: spelling correction', () {
       final doc = _doc('speling');
 
-      _apply(doc, 'speling\n', 'spelling\n', 8);
+      apply(doc, 'speling\n', 'spelling\n', 8);
 
       expect(doc.toPlainText(), 'spelling\n');
     });
@@ -350,7 +349,7 @@ void main() {
     test('select-all and type replacement', () {
       final doc = _doc('delete me entirely');
 
-      _apply(doc, 'delete me entirely\n', 'new\n', 3);
+      apply(doc, 'delete me entirely\n', 'new\n', 3);
 
       expect(doc.toPlainText(), 'new\n');
     });
@@ -358,7 +357,7 @@ void main() {
     test('no-op: identical old and new text leaves document unchanged', () {
       final doc = _doc('same text');
 
-      _apply(doc, 'same text\n', 'same text\n', 9);
+      apply(doc, 'same text\n', 'same text\n', 9);
 
       expect(doc.toPlainText(), 'same text\n');
     });
@@ -369,7 +368,7 @@ void main() {
       // 'pro' → 'professional' — "pro" appears at the start of the expansion.
       final doc = _doc('pro');
 
-      _apply(doc, 'pro\n', 'professional\n', 12);
+      apply(doc, 'pro\n', 'professional\n', 12);
 
       expect(doc.toPlainText(), 'professional\n');
     });
@@ -380,7 +379,7 @@ void main() {
       // 'way' shortcut → 'my way' — "way" appears at the end of the expansion.
       final doc = _doc('way');
 
-      _apply(doc, 'way\n', 'my way\n', 6);
+      apply(doc, 'way\n', 'my way\n', 6);
 
       expect(doc.toPlainText(), 'my way\n');
     });
@@ -395,14 +394,14 @@ void main() {
   // ---------------------------------------------------------------------------
 
   group('updateEditingValue — widget integration (CU-86d2ne59y)', () {
-    Widget _buildApp(QuillController controller) => QuillTestApp.withScaffold(
+    Widget buildApp(QuillController controller) => QuillTestApp.withScaffold(
           QuillEditor.basic(
             controller: controller,
             config: const QuillEditorConfig(autoFocus: true),
           ),
         );
 
-    QuillController _ctrl(String text) => QuillController(
+    QuillController ctrl(String text) => QuillController(
           document: _doc(text),
           selection: const TextSelection.collapsed(offset: 0),
         );
@@ -413,16 +412,16 @@ void main() {
         'iOS text replacement: prog → URL containing "programa" (primary bug)',
         (tester) async {
       const url = 'https://example.com/programa-schedule-a-call';
-      final controller = _ctrl('prog');
+      final controller = ctrl('prog');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       // Simulate iOS committing the text-replacement shortcut
       await tester.quillUpdateEditingValueWithSelection(
         find.byType(QuillEditor),
         '$url\n',
-        TextSelection.collapsed(offset: url.length),
+        const TextSelection.collapsed(offset: url.length),
       );
 
       expect(
@@ -438,15 +437,15 @@ void main() {
     testWidgets('iOS text replacement in middle of existing text',
         (tester) async {
       const url = 'https://example.com/programa-schedule-a-call';
-      final controller = _ctrl('Hello prog end');
+      final controller = ctrl('Hello prog end');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       await tester.quillUpdateEditingValueWithSelection(
         find.byType(QuillEditor),
         'Hello $url end\n',
-        TextSelection.collapsed(offset: 'Hello $url'.length),
+        const TextSelection.collapsed(offset: 'Hello $url'.length),
       );
 
       expect(controller.document.toPlainText(), 'Hello $url end\n');
@@ -454,9 +453,9 @@ void main() {
     });
 
     testWidgets('iOS omw shortcut → "on my way"', (tester) async {
-      final controller = _ctrl('omw');
+      final controller = ctrl('omw');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       await tester.quillUpdateEditingValueWithSelection(
@@ -472,9 +471,9 @@ void main() {
     // ---- Normal editing scenarios -----------------------------------------
 
     testWidgets('normal typing: character appended at caret', (tester) async {
-      final controller = _ctrl('hello');
+      final controller = ctrl('hello');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       await tester.quillUpdateEditingValueWithSelection(
@@ -488,9 +487,9 @@ void main() {
     });
 
     testWidgets('backspace: last character deleted', (tester) async {
-      final controller = _ctrl('hello!');
+      final controller = ctrl('hello!');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       await tester.quillUpdateEditingValueWithSelection(
@@ -505,9 +504,9 @@ void main() {
 
     testWidgets('autocorrect: misspelling replaced in middle of text',
         (tester) async {
-      final controller = _ctrl('the quikc fox');
+      final controller = ctrl('the quikc fox');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       await tester.quillUpdateEditingValueWithSelection(
@@ -522,9 +521,9 @@ void main() {
 
     testWidgets('select-and-type: selected range replaced by typed text',
         (tester) async {
-      final controller = _ctrl('hello world');
+      final controller = ctrl('hello world');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       // User selected 'world' (positions 6–10), typed 'flutter'
@@ -541,9 +540,9 @@ void main() {
     testWidgets('select-and-type: long selection replaced by single char',
         (tester) async {
       // Regression guard: the earlier delta-scanning fix broke this case.
-      final controller = _ctrl('Testing if this editor yet works');
+      final controller = ctrl('Testing if this editor yet works');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       // User selects all text and types 'c'
@@ -562,20 +561,20 @@ void main() {
     testWidgets('cursor is at end of inserted text after iOS replacement',
         (tester) async {
       const url = 'https://example.com/programa-schedule-a-call';
-      final controller = _ctrl('prog');
+      final controller = ctrl('prog');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       await tester.quillUpdateEditingValueWithSelection(
         find.byType(QuillEditor),
         '$url\n',
-        TextSelection.collapsed(offset: url.length),
+        const TextSelection.collapsed(offset: url.length),
       );
 
       expect(
         controller.selection,
-        TextSelection.collapsed(offset: url.length),
+        const TextSelection.collapsed(offset: url.length),
         reason: 'Cursor must be at end of the inserted URL',
       );
       controller.dispose();
@@ -583,9 +582,9 @@ void main() {
 
     testWidgets('cursor is at end of inserted word after autocorrect',
         (tester) async {
-      final controller = _ctrl('speling');
+      final controller = ctrl('speling');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       await tester.quillUpdateEditingValueWithSelection(
@@ -602,9 +601,9 @@ void main() {
 
     testWidgets('sequential replacements each apply without corruption',
         (tester) async {
-      final controller = _ctrl('one two three');
+      final controller = ctrl('one two three');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       // Replace 'one' → '1'
@@ -643,23 +642,23 @@ void main() {
       // earlier delta-scanning approach caused on keystrokes following a
       // text-replacement event.
       const url = 'https://example.com/programa-schedule-a-call';
-      final controller = _ctrl('prog');
+      final controller = ctrl('prog');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       // Text replacement
       await tester.quillUpdateEditingValueWithSelection(
         find.byType(QuillEditor),
         '$url\n',
-        TextSelection.collapsed(offset: url.length),
+        const TextSelection.collapsed(offset: url.length),
       );
 
       // Continue typing after the URL — must not throw
       await tester.quillUpdateEditingValueWithSelection(
         find.byType(QuillEditor),
         '$url more text\n',
-        TextSelection.collapsed(offset: url.length + 10),
+        const TextSelection.collapsed(offset: url.length + 10),
       );
 
       expect(
@@ -683,28 +682,28 @@ void main() {
       const prefix = 'Hello ';
       const url = 'https://realtorenespanol.com/programa-su-llamada';
       // Start with the shortcut text
-      final controller = _ctrl('${prefix}prog');
-      await tester.pumpWidget(_buildApp(controller));
+      final controller = ctrl('${prefix}prog');
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       // Step 1: iOS text replacement — payload has NO trailing \n
       await tester.quillUpdateEditingValueWithSelection(
         find.byType(QuillEditor),
         '$prefix$url',
-        TextSelection.collapsed(offset: (prefix + url).length),
+        const TextSelection.collapsed(offset: (prefix + url).length),
       );
       expect(controller.document.toPlainText(), '$prefix$url\n');
 
       // Step 2: iOS Enter — sends text with user's \n + Quill's sentinel \n
       final afterReplace = tester.testTextInput.editingState;
       final afterReplaceText = (afterReplace?['text'] as String?) ?? '';
-      final cursorPos = (prefix + url).length;
+      const cursorPos = (prefix + url).length;
       final enterText =
-          afterReplaceText.substring(0, cursorPos) + '\n' + afterReplaceText.substring(cursorPos);
+          '${afterReplaceText.substring(0, cursorPos)}\n${afterReplaceText.substring(cursorPos)}';
       await tester.quillUpdateEditingValueWithSelection(
         find.byType(QuillEditor),
         enterText,
-        TextSelection.collapsed(offset: cursorPos + 1),
+        const TextSelection.collapsed(offset: cursorPos + 1),
       );
 
       expect(
@@ -719,8 +718,8 @@ void main() {
         'Enter after normal typing does not throw '
         '(sentinel \\n handled correctly in every keystroke)',
         (tester) async {
-      final controller = _ctrl('hello');
-      await tester.pumpWidget(_buildApp(controller));
+      final controller = ctrl('hello');
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       // iOS always sends text WITH the Quill sentinel \n. Type 'a' at position
@@ -728,7 +727,7 @@ void main() {
       await tester.quillUpdateEditingValueWithSelection(
         find.byType(QuillEditor),
         'helloa\n',
-        TextSelection.collapsed(offset: 6),
+        const TextSelection.collapsed(offset: 6),
       );
       expect(controller.document.toPlainText(), 'helloa\n');
 
@@ -737,7 +736,7 @@ void main() {
       await tester.quillUpdateEditingValueWithSelection(
         find.byType(QuillEditor),
         'helloa\n\n',
-        TextSelection.collapsed(offset: 7),
+        const TextSelection.collapsed(offset: 7),
       );
       expect(controller.document.toPlainText(), 'helloa\n\n');
       controller.dispose();
@@ -751,9 +750,9 @@ void main() {
         (tester) async {
       const url = 'https://example.com/programa-schedule-a-call';
       // Controller starts with the shortcut 'prog'.
-      final controller = _ctrl('prog');
+      final controller = ctrl('prog');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       // Simulate the user having toggled bold before the replacement arrives.
@@ -767,7 +766,7 @@ void main() {
       await tester.quillUpdateEditingValueWithSelection(
         find.byType(QuillEditor),
         '$url\n',
-        TextSelection.collapsed(offset: url.length),
+        const TextSelection.collapsed(offset: url.length),
       );
 
       // The URL text must be present in the document.
@@ -788,9 +787,9 @@ void main() {
 
     testWidgets('composing-range-only change does not modify document',
         (tester) async {
-      final controller = _ctrl('hello');
+      final controller = ctrl('hello');
 
-      await tester.pumpWidget(_buildApp(controller));
+      await tester.pumpWidget(buildApp(controller));
       await tester.quillGiveFocus(find.byType(QuillEditor));
 
       final rawEditor = tester.findRawEditor(find.byType(QuillEditor));
