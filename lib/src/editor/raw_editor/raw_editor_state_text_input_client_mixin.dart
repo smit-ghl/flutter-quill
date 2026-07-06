@@ -473,6 +473,14 @@ mixin RawEditorStateTextInputClientMixin on EditorState
     _lastKnownRemoteTextEditingValue = null;
   }
 
+  @override
+  bool onFocusReceived() {
+    // Added for Flutter 3.44+ TextInputClient. The editor does not need to
+    // acquire focus in response to an autofill refocus, so use the framework
+    // default behaviour.
+    return false;
+  }
+
   void _updateSizeAndTransform() {
     if (hasConnection) {
       // Asking for renderEditor.size here can cause errors if layout hasn't
