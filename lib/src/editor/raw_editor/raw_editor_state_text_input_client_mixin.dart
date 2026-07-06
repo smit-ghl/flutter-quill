@@ -6,11 +6,28 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
+import '../../../quill_delta.dart';
 import '../../common/extensions/view_id_ext.dart';
 import '../../delta/delta_diff.dart';
+import '../../document/attribute.dart';
 import '../../document/document.dart';
+import '../../document/style.dart';
 import '../editor.dart';
 import 'raw_editor.dart';
+
+/// Strips exactly one trailing '\n' from [s], if present.
+///
+/// Quill's document always ends with a mandatory '\n' sentinel.  iOS may or
+/// may not include that sentinel in [updateEditingValue] payloads depending
+/// on whether [setEditingState] was previously called with it.  Stripping the
+/// sentinel from both old and new text before diffing guarantees that:
+///   • diff positions never reference the sentinel, preventing an
+///     index >= document.length assertion when Enter is pressed.
+///   • A text-replacement payload that omits the trailing '\n' doesn't
+///     accidentally include it in the `deleted` segment, which would compose
+///     a delta that removes the mandatory terminator.
+String _stripSentinel(String s) =>
+    s.endsWith('\n') ? s.substring(0, s.length - 1) : s;
 
 mixin RawEditorStateTextInputClientMixin on EditorState
     implements TextInputClient {
@@ -227,19 +244,93 @@ mixin RawEditorStateTextInputClientMixin on EditorState
 
     final effectiveLastKnownValue = _lastKnownRemoteTextEditingValue!;
     _lastKnownRemoteTextEditingValue = value;
-    final oldText = effectiveLastKnownValue.text;
-    final text = value.text;
-    final cursorPosition = value.selection.extentOffset;
-    final diff = getDiff(oldText, text, cursorPosition);
+
+    final oldText = _stripSentinel(effectiveLastKnownValue.text);
+    final text = _stripSentinel(value.text);
+    // Clamp cursor to the stripped text length — iOS may report the cursor
+    // at the position of the stripped sentinel (text.length + 1).
+    final cursorPosition = value.selection.extentOffset.clamp(0, text.length);
+    // Use the clamped selection throughout — all three branches pass it to
+    // updateSelection / replaceText so the stored selection is always within
+    // the stripped-text bounds.
+    final clampedSelection = value.selection.copyWith(
+      baseOffset: value.selection.baseOffset.clamp(0, text.length),
+      extentOffset: cursorPosition,
+    );
+
+    final diff = computeTextReplacementDiff(
+          oldText: oldText,
+          oldComposing: effectiveLastKnownValue.composing,
+          newText: text,
+          newComposing: value.composing,
+          newSelection: clampedSelection,
+        ) ??
+        getDiff(oldText, text, cursorPosition);
+
     if (diff.deleted.isEmpty && diff.inserted.isEmpty) {
-      widget.controller.updateSelection(value.selection, ChangeSource.local);
-    } else {
+      widget.controller.updateSelection(clampedSelection, ChangeSource.local);
+    } else if (diff.deleted.isEmpty || diff.inserted.isEmpty) {
+      // Pure insert or pure delete: route through replaceText normally.
+      //
+      // These cases do NOT have the heuristic-collision problem:
+      //   • Pure insert: no delete follows, so the insert position is irrelevant.
+      //   • Pure delete: no insert rules are applied at all.
+      //
+      // Keeping this path preserves the benefits of insert rules, in particular
+      // PreserveInlineStylesRule (typing inside bold/italic inherits the style)
+      // and AutoFormatLinksRule (URLs are auto-linked as you type).
       widget.controller.replaceText(
         diff.start,
         diff.deleted.length,
         diff.inserted,
-        value.selection,
+        clampedSelection,
       );
+    } else {
+      // True replacement (both delete and insert non-empty): bypass heuristic
+      // insert rules. Rules can insert the new text before OR after the
+      // deleted region — the subsequent delete(index, len) then hits the
+      // wrong characters (e.g. the front of the newly inserted URL instead
+      // of the shortcut text). Build a precise delete-then-insert delta at
+      // a fixed offset; the order is unambiguous regardless of content.
+
+      // Honour the onReplaceText veto, matching replaceText's behaviour.
+      // The callback receives the same (index, len, data) triple it would
+      // receive had replaceText been called directly.
+      final onReplaceText = widget.controller.onReplaceText;
+      if (onReplaceText != null &&
+          !onReplaceText(diff.start, diff.deleted.length, diff.inserted)) {
+        return;
+      }
+
+      final replaceDelta = Delta();
+      if (diff.start > 0) replaceDelta.retain(diff.start);
+      replaceDelta
+        ..delete(diff.deleted.length)
+        ..insert(diff.inserted);
+
+      // document.compose does NOT call notifyListeners on its own — that
+      // notification is deferred to the updateSelection call below.  This is
+      // intentional: we need selection and document state to be consistent
+      // before listeners run.  Do not reorder these two calls.
+      widget.controller.document.compose(replaceDelta, ChangeSource.local);
+
+      // Mirror replaceText's toggledStyle handling: apply any pending inline
+      // formatting to the newly inserted text, then let updateSelection clear
+      // the toggled state as it normally does.
+      final inlineStyle = Style.attr(
+        Map<String, Attribute>.fromEntries(
+          widget.controller.toggledStyle.attributes.entries
+              .where((a) => a.value.scope != AttributeScope.block),
+        ),
+      );
+      if (inlineStyle.isNotEmpty) {
+        final styleDelta = Delta()
+          ..retain(diff.start)
+          ..retain(diff.inserted.length, inlineStyle.toJson());
+        widget.controller.document.compose(styleDelta, ChangeSource.local);
+      }
+
+      widget.controller.updateSelection(clampedSelection, ChangeSource.local);
     }
   }
 
