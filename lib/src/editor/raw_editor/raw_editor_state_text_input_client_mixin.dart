@@ -298,6 +298,29 @@ mixin RawEditorStateTextInputClientMixin on EditorState
       // wrong characters (e.g. the front of the newly inserted URL instead
       // of the shortcut text). Build a precise delete-then-insert delta at
       // a fixed offset; the order is unambiguous regardless of content.
+      //
+      // This bypass is NOT limited to iOS text-replacement shortcuts. An IME
+      // committing a composing word at the same moment as an Enter keypress
+      // produces exactly the same non-empty-delete + non-empty-insert shape
+      // (e.g. deleted="item", inserted="item\n" — the word itself didn't
+      // change, it was just finalized, with a newline appended). Gating the
+      // bypass on a narrower "verified shortcut only" signal was tried and
+      // reintroduced the substring-collision corruption this branch exists
+      // to prevent — see test/editor/update_editing_value_test.dart. The
+      // bypass must stay unconditional for any non-empty delete + non-empty
+      // insert.
+      //
+      // Bypassing the Rules engine here means we lose — and must reproduce
+      // explicitly — two things it normally provides (CU-86d32rw03,
+      // CU-86d32rrzk):
+      //   1. Inline style inheritance (PreserveInlineStylesRule) — the
+      //      replacement text should keep the inline style already active at
+      //      the edit point (e.g. underline), not just whatever is in
+      //      `toggledStyle`.
+      //   2. Block style carry-over (PreserveBlockStyleOnInsertRule /
+      //      ResetLineFormatOnNewLineRule) — if the inserted text contains a
+      //      newline, that newline must inherit the current line's list /
+      //      code-block / quote attribute, or the block silently "exits".
 
       // Honour the onReplaceText veto, matching replaceText's behaviour.
       // The callback receives the same (index, len, data) triple it would
@@ -307,6 +330,20 @@ mixin RawEditorStateTextInputClientMixin on EditorState
           !onReplaceText(diff.start, diff.deleted.length, diff.inserted)) {
         return;
       }
+
+      // Capture styles at the edit point BEFORE composing the raw delta —
+      // the document is about to change shape and `diff.start` won't mean
+      // the same thing afterwards.
+      final styleAtEditPoint = widget.controller.document.collectStyle(
+        diff.start,
+        0,
+      );
+      final ambientInlineStyle = Style.attr(
+        Map<String, Attribute>.fromEntries(
+          styleAtEditPoint.attributes.entries.where((a) => a.value.isInline),
+        ),
+      );
+      final ambientBlockStyle = styleAtEditPoint.getBlocksExceptHeader();
 
       final replaceDelta = Delta();
       if (diff.start > 0) replaceDelta.retain(diff.start);
@@ -321,19 +358,45 @@ mixin RawEditorStateTextInputClientMixin on EditorState
       widget.controller.document.compose(replaceDelta, ChangeSource.local);
 
       // Mirror replaceText's toggledStyle handling: apply any pending inline
-      // formatting to the newly inserted text, then let updateSelection clear
-      // the toggled state as it normally does.
-      final inlineStyle = Style.attr(
-        Map<String, Attribute>.fromEntries(
+      // formatting to the newly inserted text, layered on top of the inline
+      // style already active at the edit point. An explicitly-toggled
+      // attribute (e.g. the user just tapped Bold) takes precedence over the
+      // ambient one on conflict.
+      final inlineStyle = Style.attr({
+        ...ambientInlineStyle.attributes,
+        ...Map<String, Attribute>.fromEntries(
           widget.controller.toggledStyle.attributes.entries
               .where((a) => a.value.scope != AttributeScope.block),
         ),
-      );
+      });
       if (inlineStyle.isNotEmpty) {
         final styleDelta = Delta()
           ..retain(diff.start)
           ..retain(diff.inserted.length, inlineStyle.toJson());
         widget.controller.document.compose(styleDelta, ChangeSource.local);
+      }
+
+      // If the inserted text contains a newline, apply the current line's
+      // block attribute (list / code-block / quote / indent, excluding
+      // header) to each newline so the block continues instead of silently
+      // exiting.
+      if (ambientBlockStyle.isNotEmpty && diff.inserted.contains('\n')) {
+        final blockAttrs = ambientBlockStyle.map<String, dynamic>(
+          (_, attribute) => MapEntry<String, dynamic>(
+            attribute.key,
+            attribute.value,
+          ),
+        );
+        final blockDelta = Delta()..retain(diff.start);
+        var lastNewlineEnd = 0;
+        for (var i = 0; i < diff.inserted.length; i++) {
+          if (diff.inserted[i] != '\n') continue;
+          final gap = i - lastNewlineEnd;
+          if (gap > 0) blockDelta.retain(gap);
+          blockDelta.retain(1, blockAttrs);
+          lastNewlineEnd = i + 1;
+        }
+        widget.controller.document.compose(blockDelta, ChangeSource.local);
       }
 
       widget.controller.updateSelection(clampedSelection, ChangeSource.local);
