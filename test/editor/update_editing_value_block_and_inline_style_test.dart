@@ -14,13 +14,22 @@
 //
 // Bypassing the Rules engine loses two things it normally provides, which
 // this fix reproduces explicitly inside the bypass:
-//   1. Inline style inheritance (PreserveInlineStylesRule) — a corrected
-//      word should keep the inline style (e.g. underline) already active at
-//      the edit point.
-//   2. Block style carry-over (PreserveBlockStyleOnInsertRule /
-//      ResetLineFormatOnNewLineRule) — if the inserted text contains a
-//      newline, that newline must inherit the current line's block
-//      attribute (list, code-block, quote, ...) or the block silently exits.
+//   1. Inline style inheritance (PreserveInlineStylesRule) — the replacement
+//      text should keep the inline style of the text it REPLACED. Sampling
+//      the style at the caret instead (collectStyle(start, 0)) reads the
+//      *preceding* character for an intra-line position, which both drops
+//      the replaced run's own style and leaks the previous run's style —
+//      both boundary directions are covered below.
+//   2. Line/block style carry-over (PreserveBlockStyleOnInsertRule /
+//      ResetLineFormatOnNewLineRule) — an inserted newline must inherit the
+//      split line's block attribute (list, code-block, quote, ...) or the
+//      block silently exits, and must inherit `header` so a heading does not
+//      jump to the following line.
+//
+// Inline and line attributes go to disjoint parts of the inserted string:
+// inline only to non-newline runs (Quill throws "It is not allowed to apply
+// inline attributes to line itself" otherwise), line attributes only to the
+// newlines.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_quill/flutter_quill.dart';
@@ -37,6 +46,34 @@ void main() {
           config: const QuillEditorConfig(autoFocus: true),
         ),
       );
+
+  /// Drives an IME commit: first primes a composing range (text and selection
+  /// unchanged, so the mixin only records it), then sends the commit that
+  /// `computeTextReplacementDiff` recovers a delete+insert diff from.
+  Future<void> imeCommit(
+    WidgetTester tester, {
+    required String primedText,
+    required int primedCursor,
+    required TextRange composing,
+    required String committedText,
+    required int committedCursor,
+  }) async {
+    tester.testTextInput.updateEditingValue(
+      TextEditingValue(
+        text: primedText,
+        selection: TextSelection.collapsed(offset: primedCursor),
+        composing: composing,
+      ),
+    );
+    await tester.idle();
+    tester.testTextInput.updateEditingValue(
+      TextEditingValue(
+        text: committedText,
+        selection: TextSelection.collapsed(offset: committedCursor),
+      ),
+    );
+    await tester.idle();
+  }
 
   group('inline style inheritance through the true-replacement bypass '
       '(CU-86d32rw03 — underline dropped on autocorrect)', () {
@@ -275,6 +312,183 @@ void main() {
 
       expect(controller.document.toPlainText(), 'the quick fox\n');
       controller.dispose();
+    });
+  });
+
+  group('inline style is sampled from the replaced range, not the caret', () {
+    testWidgets(
+        'autocapitalizing a styled single character keeps its own style '
+        '(style must not be read from the plain character before it)',
+        (tester) async {
+      // "say " is plain, the trailing "i" is underlined. Sampling the caret
+      // position would read the space and drop the underline.
+      final controller = QuillController(
+        document: Document.fromDelta(
+          Delta()
+            ..insert('say ')
+            ..insert('i', {'underline': true})
+            ..insert('\n'),
+        ),
+        selection: const TextSelection.collapsed(offset: 5),
+      );
+
+      await tester.pumpWidget(buildApp(controller));
+      await tester.quillGiveFocus(find.byType(QuillEditor));
+
+      await imeCommit(
+        tester,
+        primedText: 'say i\n',
+        primedCursor: 5,
+        composing: const TextRange(start: 4, end: 5),
+        committedText: 'say I\n',
+        committedCursor: 5,
+      );
+
+      expect(
+        controller.document.toDelta(),
+        Delta()
+          ..insert('say ')
+          ..insert('I', {'underline': true})
+          ..insert('\n'),
+        reason: 'The autocapitalized "I" must keep the underline that the '
+            '"i" it replaced carried.',
+      );
+
+      controller.dispose();
+    });
+
+    testWidgets(
+        'autocapitalizing a plain character after a styled run stays plain '
+        '(style must not leak from the character before it)',
+        (tester) async {
+      // Mirror of the test above: "bold" is bold, the trailing "i" is plain.
+      // Sampling the caret position would read the bold "d" and wrongly
+      // bold the replacement.
+      final controller = QuillController(
+        document: Document.fromDelta(
+          Delta()
+            ..insert('bold', {'bold': true})
+            ..insert('i')
+            ..insert('\n'),
+        ),
+        selection: const TextSelection.collapsed(offset: 5),
+      );
+
+      await tester.pumpWidget(buildApp(controller));
+      await tester.quillGiveFocus(find.byType(QuillEditor));
+
+      await imeCommit(
+        tester,
+        primedText: 'boldi\n',
+        primedCursor: 5,
+        composing: const TextRange(start: 4, end: 5),
+        committedText: 'boldI\n',
+        committedCursor: 5,
+      );
+
+      expect(
+        controller.document.toDelta(),
+        Delta()
+          ..insert('bold', {'bold': true})
+          ..insert('I\n'),
+        reason: 'The replacement for a plain character must stay plain — '
+            'bold must not leak from the preceding run.',
+      );
+
+      controller.dispose();
+    });
+
+    testWidgets(
+        'replacing styled text with only a newline does not throw '
+        '(inline attributes must not be applied to a line terminator)',
+        (tester) async {
+      // Quill rejects inline attributes on a line's own terminator with
+      // "It is not allowed to apply inline attributes to line itself".
+      final controller = QuillController(
+        document: Document.fromDelta(
+          Delta()
+            ..insert('x', {'underline': true})
+            ..insert('\n'),
+        ),
+        selection: const TextSelection.collapsed(offset: 1),
+      );
+
+      await tester.pumpWidget(buildApp(controller));
+      await tester.quillGiveFocus(find.byType(QuillEditor));
+
+      await imeCommit(
+        tester,
+        primedText: 'x\n',
+        primedCursor: 1,
+        composing: const TextRange(start: 0, end: 1),
+        committedText: '\n\n',
+        committedCursor: 1,
+      );
+
+      expect(controller.document.toDelta(), Delta()..insert('\n\n'));
+      controller.dispose();
+    });
+  });
+
+  group('header carry-over through the true-replacement bypass', () {
+    testWidgets(
+        'Enter at the end of a heading leaves the heading on its own line '
+        'and starts a plain line, matching the Rules engine',
+        (tester) async {
+      final controller = QuillController(
+        document: Document.fromDelta(
+          Delta()
+            ..insert('Title')
+            ..insert('\n', {'header': 1}),
+        ),
+        selection: const TextSelection.collapsed(offset: 5),
+      );
+
+      await tester.pumpWidget(buildApp(controller));
+      await tester.quillGiveFocus(find.byType(QuillEditor));
+
+      await imeCommit(
+        tester,
+        primedText: 'Title\n',
+        primedCursor: 5,
+        composing: const TextRange(start: 0, end: 5),
+        committedText: 'Title\n\n',
+        committedCursor: 6,
+      );
+
+      // Identical to what Document.insert(5, '\n') produces through the
+      // Rules engine — asserted directly in the test below.
+      expect(
+        controller.document.toDelta(),
+        Delta()
+          ..insert('Title')
+          ..insert('\n', {'header': 1})
+          ..insert('\n'),
+        reason: 'The heading must stay on the "Title" line; the new empty '
+            'line must be a plain paragraph.',
+      );
+
+      controller.dispose();
+    });
+
+    test(
+        'the bypass result matches the Rules engine for Enter at end of '
+        'a heading', () {
+      // Pins the expectation used above to the Rules engine itself, so this
+      // stays honest if upstream ever changes that behavior.
+      final doc = Document.fromDelta(
+        Delta()
+          ..insert('Title')
+          ..insert('\n', {'header': 1}),
+      )..insert(5, '\n');
+
+      expect(
+        doc.toDelta(),
+        Delta()
+          ..insert('Title')
+          ..insert('\n', {'header': 1})
+          ..insert('\n'),
+      );
     });
   });
 }

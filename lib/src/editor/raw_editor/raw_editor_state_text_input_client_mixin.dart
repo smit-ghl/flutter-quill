@@ -314,13 +314,20 @@ mixin RawEditorStateTextInputClientMixin on EditorState
       // explicitly — two things it normally provides (CU-86d32rw03,
       // CU-86d32rrzk):
       //   1. Inline style inheritance (PreserveInlineStylesRule) — the
-      //      replacement text should keep the inline style already active at
-      //      the edit point (e.g. underline), not just whatever is in
+      //      replacement text should keep the inline style of the text it
+      //      REPLACED (e.g. underline), not just whatever is in
       //      `toggledStyle`.
-      //   2. Block style carry-over (PreserveBlockStyleOnInsertRule /
-      //      ResetLineFormatOnNewLineRule) — if the inserted text contains a
-      //      newline, that newline must inherit the current line's list /
-      //      code-block / quote attribute, or the block silently "exits".
+      //   2. Line/block style carry-over (PreserveBlockStyleOnInsertRule /
+      //      ResetLineFormatOnNewLineRule) — an inserted newline must inherit
+      //      the split line's list / code-block / quote / header attribute,
+      //      or the block silently "exits" and a heading jumps to the wrong
+      //      line.
+      //
+      // Inline and line attributes are applied to DISJOINT parts of the
+      // inserted string: inline attributes only to non-newline runs (Quill
+      // rejects inline attributes on a line terminator with "It is not
+      // allowed to apply inline attributes to line itself"), line attributes
+      // only to the newlines themselves.
 
       // Honour the onReplaceText veto, matching replaceText's behaviour.
       // The callback receives the same (index, len, data) triple it would
@@ -331,19 +338,45 @@ mixin RawEditorStateTextInputClientMixin on EditorState
         return;
       }
 
-      // Capture styles at the edit point BEFORE composing the raw delta —
-      // the document is about to change shape and `diff.start` won't mean
-      // the same thing afterwards.
-      final styleAtEditPoint = widget.controller.document.collectStyle(
-        diff.start,
-        0,
-      );
-      final ambientInlineStyle = Style.attr(
+      // Capture styles BEFORE composing the raw delta — the document is
+      // about to change shape and these offsets won't mean the same thing
+      // afterwards.
+      //
+      // Inline style comes from the DELETED RANGE, not from
+      // collectStyle(diff.start, 0): for an intra-line position the latter
+      // reports the style of the character *preceding* the range (see
+      // Document.collectStyle), which both drops the replaced text's own
+      // style (underlined "i" autocapitalized to "I" loses the underline)
+      // and leaks the preceding run's style (plain "i" after a bold word
+      // wrongly becomes bold).
+      final replacedInlineStyle = Style.attr(
         Map<String, Attribute>.fromEntries(
-          styleAtEditPoint.attributes.entries.where((a) => a.value.isInline),
+          widget.controller.document
+              .collectStyle(diff.start, diff.deleted.length)
+              .attributes
+              .entries
+              .where((a) => a.value.isInline),
         ),
       );
-      final ambientBlockStyle = styleAtEditPoint.getBlocksExceptHeader();
+
+      // Full line style of the line being split — the attributes carried by
+      // the newline that terminates it, which is what
+      // PreserveBlockStyleOnInsertRule reads. Includes header, unlike
+      // getBlocksExceptHeader().
+      final insertsNewline = diff.inserted.contains('\n');
+      var lineStyle = const Style();
+      if (insertsNewline) {
+        final itr = DeltaIterator(widget.controller.document.toDelta())
+          ..skip(diff.start);
+        while (itr.hasNext) {
+          final op = itr.next();
+          final opText = op.data is String ? op.data as String : '';
+          if (opText.contains('\n')) {
+            lineStyle = Style.fromJson(op.attributes);
+            break;
+          }
+        }
+      }
 
       final replaceDelta = Delta();
       if (diff.start > 0) replaceDelta.retain(diff.start);
@@ -357,46 +390,89 @@ mixin RawEditorStateTextInputClientMixin on EditorState
       // before listeners run.  Do not reorder these two calls.
       widget.controller.document.compose(replaceDelta, ChangeSource.local);
 
-      // Mirror replaceText's toggledStyle handling: apply any pending inline
-      // formatting to the newly inserted text, layered on top of the inline
-      // style already active at the edit point. An explicitly-toggled
-      // attribute (e.g. the user just tapped Bold) takes precedence over the
-      // ambient one on conflict.
+      // Mirror replaceText's toggledStyle handling: an explicitly-toggled
+      // attribute (the user just tapped Bold) takes precedence over the
+      // style inherited from the replaced text.
       final inlineStyle = Style.attr({
-        ...ambientInlineStyle.attributes,
+        ...replacedInlineStyle.attributes,
         ...Map<String, Attribute>.fromEntries(
           widget.controller.toggledStyle.attributes.entries
               .where((a) => a.value.scope != AttributeScope.block),
         ),
       });
-      if (inlineStyle.isNotEmpty) {
-        final styleDelta = Delta()
-          ..retain(diff.start)
-          ..retain(diff.inserted.length, inlineStyle.toJson());
-        widget.controller.document.compose(styleDelta, ChangeSource.local);
+      final inlineAttrs = inlineStyle.toJson();
+
+      // Line attributes for inserted newlines, matching
+      // PreserveBlockStyleOnInsertRule: the first inserted newline
+      // terminates what was the original line, so it inherits the full line
+      // style (block attrs AND header); any further newlines start brand-new
+      // lines and inherit block attrs only.
+      final firstNewlineAttrs = lineStyle.toJson();
+      final blocksExceptHeader = lineStyle.getBlocksExceptHeader();
+      final laterNewlineAttrs = blocksExceptHeader.isEmpty
+          ? null
+          : blocksExceptHeader.map<String, dynamic>(
+              (_, attribute) =>
+                  MapEntry<String, dynamic>(attribute.key, attribute.value),
+            );
+
+      // Walk the inserted string and format text runs and newlines
+      // separately — inline attributes must never land on a line terminator.
+      final formatDelta = Delta()..retain(diff.start);
+      var appliedAnyAttribute = false;
+      var newlinesSeen = 0;
+      var cursor = 0;
+      while (cursor < diff.inserted.length) {
+        if (diff.inserted[cursor] == '\n') {
+          final attrs = newlinesSeen == 0
+              ? firstNewlineAttrs
+              : laterNewlineAttrs;
+          if (attrs != null && attrs.isNotEmpty) {
+            formatDelta.retain(1, attrs);
+            appliedAnyAttribute = true;
+          } else {
+            formatDelta.retain(1);
+          }
+          newlinesSeen++;
+          cursor++;
+          continue;
+        }
+        final runStart = cursor;
+        while (cursor < diff.inserted.length && diff.inserted[cursor] != '\n') {
+          cursor++;
+        }
+        final runLength = cursor - runStart;
+        if (inlineAttrs != null && inlineAttrs.isNotEmpty) {
+          formatDelta.retain(runLength, inlineAttrs);
+          appliedAnyAttribute = true;
+        } else {
+          formatDelta.retain(runLength);
+        }
+      }
+      if (appliedAnyAttribute) {
+        widget.controller.document.compose(formatDelta, ChangeSource.local);
       }
 
-      // If the inserted text contains a newline, apply the current line's
-      // block attribute (list / code-block / quote / indent, excluding
-      // header) to each newline so the block continues instead of silently
-      // exiting.
-      if (ambientBlockStyle.isNotEmpty && diff.inserted.contains('\n')) {
-        final blockAttrs = ambientBlockStyle.map<String, dynamic>(
-          (_, attribute) => MapEntry<String, dynamic>(
-            attribute.key,
-            attribute.value,
-          ),
+      // A heading applies to exactly one line. Having moved it onto the first
+      // inserted newline above, clear it from the newline that now terminates
+      // the trailing remainder — otherwise the remainder line renders as the
+      // heading instead. Same reset PreserveBlockStyleOnInsertRule and
+      // ResetLineFormatOnNewLineRule perform.
+      if (insertsNewline && lineStyle.containsKey(Attribute.header.key)) {
+        final remainder = widget.controller.document.queryChild(
+          diff.start + diff.inserted.length,
         );
-        final blockDelta = Delta()..retain(diff.start);
-        var lastNewlineEnd = 0;
-        for (var i = 0; i < diff.inserted.length; i++) {
-          if (diff.inserted[i] != '\n') continue;
-          final gap = i - lastNewlineEnd;
-          if (gap > 0) blockDelta.retain(gap);
-          blockDelta.retain(1, blockAttrs);
-          lastNewlineEnd = i + 1;
+        final remainderLine = remainder.node;
+        if (remainderLine != null) {
+          final terminator =
+              remainderLine.documentOffset + remainderLine.length - 1;
+          widget.controller.document.compose(
+            Delta()
+              ..retain(terminator)
+              ..retain(1, Attribute.header.toJson()),
+            ChangeSource.local,
+          );
         }
-        widget.controller.document.compose(blockDelta, ChangeSource.local);
       }
 
       widget.controller.updateSelection(clampedSelection, ChangeSource.local);
