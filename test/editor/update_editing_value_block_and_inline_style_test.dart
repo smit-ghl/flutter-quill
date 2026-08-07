@@ -160,6 +160,18 @@ void main() {
       await tester.idle();
 
       expect(controller.document.toPlainText(), 'First item\n\n');
+      // Explicit Delta assertion, not just collectStyle: both the
+      // newly-inserted newline (from Enter) and the original one (from the
+      // source document, untouched by the edit) must carry the list
+      // attribute — Quill's Delta serialization compacts two consecutive
+      // newlines with identical attributes into one "\n\n" insert op, which
+      // is what confirms neither line dropped the attribute.
+      expect(
+        controller.document.toDelta(),
+        Delta()
+          ..insert('First item')
+          ..insert('\n\n', {'list': 'bullet'}),
+      );
       expect(
         controller.document
             .collectStyle(10, 1)
@@ -167,7 +179,9 @@ void main() {
             .containsKey('list'),
         isTrue,
         reason:
-            'The newly-inserted newline must inherit the bullet-list '
+            'The newly-inserted newline (offset 10 — see the Delta assertion '
+            'above: it is the first of the two compacted "\\n" ops, not the '
+            'pre-existing one at offset 11) must inherit the bullet-list '
             'attribute from the line it split, or the list visibly stops.',
       );
 
@@ -209,6 +223,15 @@ void main() {
       await tester.idle();
 
       expect(controller.document.toPlainText(), 'const x = 1\n\n');
+      // Explicit Delta assertion — see the list-continuation test above for
+      // why this, not just collectStyle, is what actually distinguishes the
+      // newly-inserted newline from the pre-existing one.
+      expect(
+        controller.document.toDelta(),
+        Delta()
+          ..insert('const x = 1')
+          ..insert('\n\n', {'code-block': true}),
+      );
       expect(
         controller.document
             .collectStyle(11, 1)
@@ -216,7 +239,9 @@ void main() {
             .containsKey('code-block'),
         isTrue,
         reason:
-            'The newly-inserted newline must inherit the code-block '
+            'The newly-inserted newline (offset 11 — the first of the two '
+            'compacted "\\n" ops in the Delta assertion above, not the '
+            'pre-existing one at offset 12) must inherit the code-block '
             'attribute, or the block visibly closes mid-typing.',
       );
 
