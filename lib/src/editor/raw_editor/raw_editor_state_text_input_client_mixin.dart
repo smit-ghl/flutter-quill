@@ -453,12 +453,26 @@ mixin RawEditorStateTextInputClientMixin on EditorState
         widget.controller.document.compose(formatDelta, ChangeSource.local);
       }
 
-      // A heading applies to exactly one line. Having moved it onto the first
-      // inserted newline above, clear it from the newline that now terminates
-      // the trailing remainder — otherwise the remainder line renders as the
-      // heading instead. Same reset PreserveBlockStyleOnInsertRule and
-      // ResetLineFormatOnNewLineRule perform.
-      if (insertsNewline && lineStyle.containsKey(Attribute.header.key)) {
+      // A heading is reset on the trailing remainder only in the cases where
+      // the Rules engine resets it — verified against Document.insert() for
+      // the heading/list × mid-line/end-of-line matrix:
+      //
+      //   • End of line (Enter with nothing after the caret):
+      //     ResetLineFormatOnNewLineRule clears header, so the new empty line
+      //     is a plain paragraph rather than a second heading.
+      //   • Mid-line split of a heading: PreserveLineStyleOnSplitRule keeps
+      //     the header on BOTH halves and performs no reset — so splitting
+      //     "Title|Here" must leave "Here" a heading too.
+      //   • Line carrying non-header block attrs (list, code-block, ...):
+      //     PreserveBlockStyleOnInsertRule runs first and clears header
+      //     regardless of caret position.
+      final afterDeleted = diff.start + diff.deleted.length;
+      final endsAtLineEnd =
+          afterDeleted >= oldText.length || oldText[afterDeleted] == '\n';
+      final resetsHeader = endsAtLineEnd || blocksExceptHeader.isNotEmpty;
+      if (insertsNewline &&
+          resetsHeader &&
+          lineStyle.containsKey(Attribute.header.key)) {
         final remainder = widget.controller.document.queryChild(
           diff.start + diff.inserted.length,
         );

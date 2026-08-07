@@ -430,65 +430,94 @@ void main() {
     });
   });
 
-  group('header carry-over through the true-replacement bypass', () {
-    testWidgets(
-        'Enter at the end of a heading leaves the heading on its own line '
-        'and starts a plain line, matching the Rules engine',
-        (tester) async {
-      final controller = QuillController(
-        document: Document.fromDelta(
-          Delta()
-            ..insert('Title')
-            ..insert('\n', {'header': 1}),
-        ),
-        selection: const TextSelection.collapsed(offset: 5),
-      );
-
-      await tester.pumpWidget(buildApp(controller));
-      await tester.quillGiveFocus(find.byType(QuillEditor));
-
-      await imeCommit(
-        tester,
-        primedText: 'Title\n',
-        primedCursor: 5,
-        composing: const TextRange(start: 0, end: 5),
-        committedText: 'Title\n\n',
-        committedCursor: 6,
-      );
-
-      // Identical to what Document.insert(5, '\n') produces through the
-      // Rules engine — asserted directly in the test below.
-      expect(
-        controller.document.toDelta(),
-        Delta()
-          ..insert('Title')
-          ..insert('\n', {'header': 1})
-          ..insert('\n'),
-        reason: 'The heading must stay on the "Title" line; the new empty '
-            'line must be a plain paragraph.',
-      );
-
-      controller.dispose();
-    });
-
-    test(
-        'the bypass result matches the Rules engine for Enter at end of '
-        'a heading', () {
-      // Pins the expectation used above to the Rules engine itself, so this
-      // stays honest if upstream ever changes that behavior.
-      final doc = Document.fromDelta(
-        Delta()
+  // Line/header attributes are the subtlest part of the bypass, because which
+  // rule handles a newline insert — and therefore whether `header` is reset on
+  // the trailing remainder — depends on both the caret position and the line's
+  // other block attributes:
+  //
+  //   ResetLineFormatOnNewLineRule   end-of-line          → reset header
+  //   PreserveLineStyleOnSplitRule   mid-line, no blocks   → keep header
+  //   PreserveBlockStyleOnInsertRule any position + blocks → reset header
+  //
+  // Rather than hard-coding each expectation, every case below asserts that
+  // the bypass produces exactly what the Rules engine produces for the same
+  // split, so the two can never drift.
+  group('line/header carry-over matches the Rules engine exactly', () {
+    final cases = <String, ({Delta Function() source, String plain, int at})>{
+      'heading, mid-line split (header stays on BOTH halves)': (
+        source: () => Delta()
+          ..insert('TitleHere')
+          ..insert('\n', {'header': 1}),
+        plain: 'TitleHere',
+        at: 5,
+      ),
+      'heading, end-of-line (new line is a plain paragraph)': (
+        source: () => Delta()
           ..insert('Title')
           ..insert('\n', {'header': 1}),
-      )..insert(5, '\n');
+        plain: 'Title',
+        at: 5,
+      ),
+      'bullet list, mid-line split': (
+        source: () => Delta()
+          ..insert('ItemHere')
+          ..insert('\n', {'list': 'bullet'}),
+        plain: 'ItemHere',
+        at: 4,
+      ),
+      'bullet list, end-of-line': (
+        source: () => Delta()
+          ..insert('Item')
+          ..insert('\n', {'list': 'bullet'}),
+        plain: 'Item',
+        at: 4,
+      ),
+      'list + heading, mid-line split (blocks force a header reset)': (
+        source: () => Delta()
+          ..insert('BothHere')
+          ..insert('\n', {'list': 'bullet', 'header': 1}),
+        plain: 'BothHere',
+        at: 4,
+      ),
+    };
 
-      expect(
-        doc.toDelta(),
-        Delta()
-          ..insert('Title')
-          ..insert('\n', {'header': 1})
-          ..insert('\n'),
-      );
-    });
+    for (final entry in cases.entries) {
+      final c = entry.value;
+      testWidgets(entry.key, (tester) async {
+        // What the Rules engine does for the same split, computed live.
+        final expected = (Document.fromDelta(c.source())..insert(c.at, '\n'))
+            .toDelta();
+
+        final controller = QuillController(
+          document: Document.fromDelta(c.source()),
+          selection: TextSelection.collapsed(offset: c.at),
+        );
+
+        await tester.pumpWidget(buildApp(controller));
+        await tester.quillGiveFocus(find.byType(QuillEditor));
+
+        // IME commits the composing word and the Enter together, which is what
+        // routes this through the bypass instead of the Rules engine.
+        final committed =
+            '${c.plain.substring(0, c.at)}\n${c.plain.substring(c.at)}';
+        await imeCommit(
+          tester,
+          primedText: '${c.plain}\n',
+          primedCursor: c.at,
+          composing: TextRange(start: 0, end: c.at),
+          committedText: '$committed\n',
+          committedCursor: c.at + 1,
+        );
+
+        expect(
+          controller.document.toDelta(),
+          expected,
+          reason: 'The bypass must produce the same document as the Rules '
+              'engine for this split.',
+        );
+
+        controller.dispose();
+      });
+    }
   });
 }
