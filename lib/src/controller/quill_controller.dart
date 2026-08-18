@@ -272,6 +272,23 @@ class QuillController extends ChangeNotifier {
   }) {
     assert(data is String || data is Embeddable || data is Delta);
 
+    // An IME can commit an editing value diffed against stale text (for
+    // example an Android keyboard batching a predictive-text replacement),
+    // so the incoming offsets may point past the current document. Clamp
+    // them to the document bounds instead of letting document.replace and
+    // the insert rules throw a RangeError.
+    final maxTextIndex = document.length - 1;
+    if (index < 0) {
+      index = 0;
+    } else if (index > maxTextIndex) {
+      index = maxTextIndex;
+    }
+    if (len < 0) {
+      len = 0;
+    } else if (len > maxTextIndex - index) {
+      len = maxTextIndex - index;
+    }
+
     if (onReplaceText != null && !onReplaceText!(index, len, data)) {
       return;
     }
