@@ -2,6 +2,31 @@ import 'package:flutter/material.dart';
 
 import '../../editor/widgets/default_styles.dart';
 
+/// GHL patch: a total version of [stringToColor] for content-derived values.
+///
+/// [stringToColor] throws on anything it cannot parse (`UnsupportedError`
+/// for unknown formats, `FormatException`/`RangeError` for malformed
+/// `rgba(…)`/hex). When the input comes from document content — pasted HTML,
+/// stored Deltas — that throw happens mid-build and takes down the whole
+/// editor screen (a build error inside a quill text line becomes a
+/// RenderErrorBox that `_TextLineElement` cannot adopt).
+///
+/// This wrapper never throws: unparseable input yields `null`, so callers
+/// skip the color instead of crashing. Use it for any value that originates
+/// from document content; [stringToColor] remains for trusted literals.
+Color? tryStringToColor(
+  String? s, [
+  Color? originalColor,
+  DefaultStyles? defaultStyles,
+]) {
+  if (s == null) return originalColor;
+  try {
+    return stringToColor(s, originalColor, defaultStyles);
+  } catch (_) {
+    return null;
+  }
+}
+
 Color stringToColor(
   String? s, [
   Color? originalColor,

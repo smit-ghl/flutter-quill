@@ -586,7 +586,11 @@ class _TextLineState extends State<TextLine> {
         if (k == Attribute.underline.key || k == Attribute.strikeThrough.key) {
           var textColor = defaultStyles.color;
           if (color?.value is String) {
-            textColor = stringToColor(color?.value, textColor, defaultStyles);
+            // GHL patch: content-derived color — never crash the build on an
+            // unparseable value; keep the default decoration color instead.
+            textColor =
+                tryStringToColor(color?.value, textColor, defaultStyles) ??
+                    textColor;
           }
           res = _merge(
             res.copyWith(decorationColor: textColor),
@@ -638,7 +642,9 @@ class _TextLineState extends State<TextLine> {
     if (color != null && color.value != null) {
       var textColor = defaultStyles.color;
       if (color.value is String) {
-        textColor = stringToColor(color.value, null, defaultStyles);
+        // GHL patch: content-derived color — null (unparseable) is skipped
+        // by the guard below instead of crashing the build.
+        textColor = tryStringToColor(color.value, null, defaultStyles);
       }
       if (textColor != null) {
         res = res.merge(TextStyle(color: textColor));
@@ -647,7 +653,10 @@ class _TextLineState extends State<TextLine> {
 
     final background = nodeStyle.attributes[Attribute.background.key];
     if (background != null && background.value != null) {
-      final backgroundColor = stringToColor(
+      // GHL patch: content-derived color — a null backgroundColor is a no-op
+      // in TextStyle.merge, so an unparseable value renders unhighlighted
+      // instead of crashing the build.
+      final backgroundColor = tryStringToColor(
         background.value,
         null,
         defaultStyles,

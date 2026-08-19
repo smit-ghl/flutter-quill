@@ -128,13 +128,16 @@ class QuillToolbarColorButtonState extends QuillToolbarColorBaseButtonState {
 
   @override
   Widget build(BuildContext context) {
+    // GHL patch: selection attributes are content-derived — an unparseable
+    // color must not crash the toolbar build; null just leaves the icon
+    // untinted.
     final iconColor = _isToggledColor && !widget.isBackground && !_isWhite
-        ? stringToColor(_selectionStyle.attributes['color']!.value)
+        ? tryStringToColor(_selectionStyle.attributes['color']!.value)
         : null;
 
     final iconColorBackground =
         _isToggledBackground && widget.isBackground && !_isWhiteBackground
-        ? stringToColor(_selectionStyle.attributes['background']!.value)
+        ? tryStringToColor(_selectionStyle.attributes['background']!.value)
         : null;
 
     final fillColor = _isToggledColor && !widget.isBackground && _isWhite
