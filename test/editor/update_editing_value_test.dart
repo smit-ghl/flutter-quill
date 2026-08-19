@@ -810,5 +810,47 @@ void main() {
       expect(controller.document.toPlainText(), 'hello\n');
       controller.dispose();
     });
+
+    // ---- Stale IME offsets (desynced remote value) --------------------------
+
+    testWidgets(
+        'out-of-range true replacement from a stale IME is clamped, '
+        'not composed', (tester) async {
+      final oldBody = '${'x' * 145}text';
+      final controller = ctrl(oldBody);
+
+      await tester.pumpWidget(buildApp(controller));
+      await tester.quillGiveFocus(find.byType(QuillEditor));
+
+      // Shrink the document behind the IME's back. document.compose does not
+      // notify the controller, and we do not pump, so the editor's
+      // _lastKnownRemoteTextEditingValue still holds the 150-char text.
+      controller.document.compose(
+        Delta()
+          ..retain(89)
+          ..delete(60),
+        ChangeSource.local,
+      );
+      expect(controller.document.length, 90);
+
+      // The stale IME commits a true replacement (delete+insert) whose diff
+      // against its own 150-char copy starts at 145 — past the 90-char
+      // document. Without the bounds gate this reaches document.compose and
+      // fails the container assertions (silent corruption in release).
+      final newBody = '${'x' * 145}XYZW';
+      await tester.quillUpdateEditingValueWithSelection(
+        find.byType(QuillEditor),
+        '$newBody\n',
+        TextSelection.collapsed(offset: newBody.length),
+      );
+
+      expect(
+        controller.document.toPlainText(),
+        '${'x' * 89}XYZW\n',
+        reason: 'stale replacement must clamp to an append at the end, '
+            'and the node tree and flat delta must stay consistent',
+      );
+      controller.dispose();
+    });
   });
 }

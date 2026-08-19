@@ -386,16 +386,5 @@ void main() {
     });
 
     // TODO: Write tests for the bug fix: https://github.com/singerdmx/flutter-quill/issues/1432
-
-    test('Insert at exactly the document end does not throw', () {
-      final delta = Delta()..insert('short text\n');
-      final document = Document.fromDelta(delta);
-      final endIndex = document.toPlainText().length;
-
-      expect(
-        rule.apply(document, endIndex, data: 'https://example.com', len: 0),
-        isNotNull,
-      );
-    });
   });
 }

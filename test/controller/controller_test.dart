@@ -480,6 +480,23 @@ void main() {
       expect(controller.document.toPlainText(), 'da\n');
     });
 
+    test('onReplaceText veto receives the clamped offsets', () {
+      int? seenIndex;
+      int? seenLen;
+
+      controller
+        ..onReplaceText = (index, len, data) {
+          seenIndex = index;
+          seenLen = len;
+          return true;
+        }
+        ..replaceText(50, 100, 'X', null);
+
+      expect(seenIndex, 4);
+      expect(seenLen, 0);
+      expect(controller.document.toPlainText(), 'dataX\n');
+    });
+
     test(
         'stale IME commit past the end of a long document with links '
         'does not throw', () {
