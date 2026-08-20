@@ -460,4 +460,61 @@ void main() {
       }
     });
   });
+
+  group('replaceText out-of-range offsets', () {
+    test('clamps an index past the document end to an append', () {
+      controller.replaceText(50, 0, ' appended', null);
+
+      expect(controller.document.toPlainText(), 'data appended\n');
+    });
+
+    test('clamps a negative index to the document start', () {
+      controller.replaceText(-5, 0, 'X', null);
+
+      expect(controller.document.toPlainText(), 'Xdata\n');
+    });
+
+    test('clamps a delete length that overruns the document end', () {
+      controller.replaceText(2, 100, '', null);
+
+      expect(controller.document.toPlainText(), 'da\n');
+    });
+
+    test('onReplaceText veto receives the clamped offsets', () {
+      int? seenIndex;
+      int? seenLen;
+
+      controller
+        ..onReplaceText = (index, len, data) {
+          seenIndex = index;
+          seenLen = len;
+          return true;
+        }
+        ..replaceText(50, 100, 'X', null);
+
+      expect(seenIndex, 4);
+      expect(seenLen, 0);
+      expect(controller.document.toPlainText(), 'dataX\n');
+    });
+
+    test(
+        'stale IME commit past the end of a long document with links '
+        'does not throw', () {
+      final longText = '${'quill ' * 160}https://example.com more text';
+      controller = QuillController.basic()
+        ..compose(
+          Delta()..insert(longText),
+          const TextSelection.collapsed(offset: 0),
+          ChangeSource.local,
+        );
+      final staleIndex = controller.document.length + 16;
+
+      controller.replaceText(staleIndex, 0, ' https://ghl.test', null);
+
+      expect(
+        controller.document.toPlainText(),
+        contains('https://ghl.test'),
+      );
+    });
+  });
 }

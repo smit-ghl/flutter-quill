@@ -273,14 +273,31 @@ mixin RawEditorStateTextInputClientMixin on EditorState
         ) ??
         getDiff(oldText, text, cursorPosition);
 
+    // A desynced IME can diff against stale text and produce a replaced
+    // range that reaches past the current document (the diff was computed
+    // on the platform's longer copy). Such a range must not reach the
+    // direct-compose branch below: document.compose has no bounds recovery,
+    // and in release builds its assertions are stripped, so an out-of-range
+    // delete/insert silently diverges the node tree from the flat delta.
+    // Route these through replaceText instead, which clamps the offsets to
+    // an append at the end of the text. This gate only evicts out-of-range
+    // diffs — every in-range replacement still takes the bypass, so the
+    // substring-collision protection the bypass provides is untouched.
+    final maxTextIndex = widget.controller.document.length - 1;
+    final diffWithinDocument = diff.start + diff.deleted.length <= maxTextIndex;
+
     if (diff.deleted.isEmpty && diff.inserted.isEmpty) {
       widget.controller.updateSelection(clampedSelection, ChangeSource.local);
-    } else if (diff.deleted.isEmpty || diff.inserted.isEmpty) {
+    } else if (diff.deleted.isEmpty ||
+        diff.inserted.isEmpty ||
+        !diffWithinDocument) {
       // Pure insert or pure delete: route through replaceText normally.
       //
       // These cases do NOT have the heuristic-collision problem:
       //   • Pure insert: no delete follows, so the insert position is irrelevant.
       //   • Pure delete: no insert rules are applied at all.
+      //   • Out-of-range replacement: the offsets are stale garbage, so there
+      //     is no correct style run to preserve; replaceText clamps them.
       //
       // Keeping this path preserves the benefits of insert rules, in particular
       // PreserveInlineStylesRule (typing inside bold/italic inherits the style)
